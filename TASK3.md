@@ -12,7 +12,12 @@ SELECT
     a.category,
     ROUND(AVG(r.score), 2) AS average_score,
     COUNT(DISTINCT r.id) AS review_count,
-    COUNT(DISTINCT CASE WHEN b.status = 'completed' THEN b.id END) AS completed_booking_count
+    (
+      SELECT COUNT(*)
+      FROM bookings b2
+      WHERE b2.artist_id = a.id
+        AND b2.status = 'completed'
+    ) AS completed_booking_count
 FROM artists a
 JOIN users u ON u.id = a.user_id
 JOIN reviews r ON r.artist_id = a.id
@@ -28,12 +33,13 @@ LIMIT 10;
 Notes on the query itself:
 - Reviews are only ever created against `completed` bookings in this codebase (see `reviewService.createReview`), so the `b.status = 'completed'` filter is mostly a defensive, explicit guard — it also protects the query if that invariant is ever relaxed.
 - `COUNT(DISTINCT r.id)` rather than a plain `COUNT(*)` because the join through `bookings` is 1:1 per review in this schema, but using `DISTINCT` makes the intent ("count of reviews", not "count of joined rows") explicit and safe if the join shape ever changes.
-- The 90-day window is applied on `reviews.created_at` — i.e. "reviews left in the last 90 days" — rather than on `bookings.event_start`, since the leaderboard is meant to reflect recent reputation, not recent event dates.
+- `completed_booking_count` is a separate count of all of that artist's completed bookings, not a recount of the reviews in the window. Counting bookings through the review join would always equal `review_count` (one review per booking), so it could never break a tie.
+- The 90-day window is applied on `reviews.created_at` — i.e. "reviews left in the last 90 days" — rather than on `bookings.event_start`, since the leaderboard is meant to reflect recent reputation, not recent event dates. The window filters who qualifies and what the average is. The tiebreaker is the artist's total completed work.
 
 ### Which indexes would you add, and why?
 
 1. **`reviews(artist_id, created_at)`** — the query's two main access patterns are "all reviews for artist X" and "...within the last 90 days", so a composite index on `(artist_id, created_at)` lets MySQL seek straight to an artist's recent reviews instead of scanning the whole table. This is the single most important index for this query, and it's the one in `schema.sql` (`idx_reviews_artist_created`).
-2. **`bookings(id)`** — already the primary key, so the `JOIN bookings b ON b.id = r.booking_id` is a primary-key lookup and needs no extra index.
+2. **`bookings(id)`** — already the primary key, so the `JOIN bookings b ON b.id = r.booking_id` is a primary-key lookup and needs no extra index. The completed-count subquery filters `bookings` by `artist_id` and `status`; `idx_bookings_artist_time` already leads with `artist_id`, so that lookup is an index range rather than a scan.
 3. **`reviews(booking_id)`** — already covered by the `UNIQUE KEY uq_reviews_booking` constraint, which doubles as an index and makes `r.artist_id = a.id` style joins and the booking→review lookup fast.
 4. **`artists(user_id)`** — already unique-indexed (`uq_artists_user_id`), which keeps the `artists JOIN users` fast in both directions.
 

@@ -78,7 +78,12 @@ async function leaderboard() {
         a.category,
         ROUND(AVG(r.score), 2) AS average_score,
         COUNT(DISTINCT r.id) AS review_count,
-        COUNT(DISTINCT CASE WHEN b.status = 'completed' THEN b.id END) AS completed_booking_count
+        (
+          SELECT COUNT(*)
+            FROM bookings b2
+           WHERE b2.artist_id = a.id
+             AND b2.status = 'completed'
+        ) AS completed_booking_count
      FROM artists a
      JOIN users u ON u.id = a.user_id
      JOIN reviews r ON r.artist_id = a.id
